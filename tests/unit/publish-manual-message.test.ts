@@ -38,4 +38,24 @@ describe('PublishManualMessageUseCase', () => {
       value: '{"orderId":"order-001","amount":100}',
     });
   });
+
+  it('keeps string values and incoming x-correlator-id', async () => {
+    const publisher = new InMemoryManualMessagePublisher();
+    const useCase = new PublishManualMessageUseCase(publisher);
+
+    const result = await useCase.execute({
+      topic: 'example-topic',
+      value: 'plain message',
+      headers: { 'x-correlator-id': 'corr-001' },
+    });
+
+    expect(result.txid).toBe('corr-001');
+    expect(result.value).toBe('plain message');
+    expect(result.headers['x-correlator-id']).toBe('corr-001');
+    expect(publisher.messages[0]).toMatchObject({
+      topic: 'example-topic',
+      value: 'plain message',
+      headers: { 'x-correlator-id': 'corr-001' },
+    });
+  });
 });

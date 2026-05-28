@@ -26,13 +26,15 @@ vi.mock('@/infra/logger/logger', () => ({
 class TestMessageProcessor implements MessageProcessor {
   readonly inputs: ConsumedMessageInput[] = [];
 
-  constructor(private readonly shouldFail = false) {}
+  constructor(private readonly error?: unknown) {}
 
-  execute(input: ConsumedMessageInput): MessageProcessResult {
+  execute(input: ConsumedMessageInput): MessageProcessResult | Promise<MessageProcessResult> {
     this.inputs.push(input);
 
-    if (this.shouldFail) {
-      throw new Error('processing failed');
+    if (this.error) {
+      // Test fallback handling for non-Error failures from unknown dependencies.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      return Promise.reject(this.error);
     }
 
     return {
@@ -75,7 +77,7 @@ const createKafka = () => {
   };
 };
 
-const createPayload = (): EachMessagePayload =>
+const createPayload = (headers?: Record<string, Buffer | string | Array<Buffer | string>>) =>
   ({
     topic: 'example-topic',
     partition: 0,
@@ -83,6 +85,22 @@ const createPayload = (): EachMessagePayload =>
       offset: '12',
       key: Buffer.from('order-001'),
       value: Buffer.from('{"orderId":"order-001"}'),
+      headers: headers ?? {
+        'x-correlator-id': Buffer.from('corr-001'),
+      },
+    },
+    heartbeat: vi.fn(),
+    pause: vi.fn(() => () => undefined),
+  }) as unknown as EachMessagePayload;
+
+const createPayloadWithoutKey = (): EachMessagePayload =>
+  ({
+    topic: 'example-topic',
+    partition: 0,
+    message: {
+      offset: '12',
+      key: null,
+      value: Buffer.from('plain message'),
       headers: {
         'x-correlator-id': Buffer.from('corr-001'),
       },
@@ -114,11 +132,50 @@ describe('KafkaConsumer', () => {
     expect(processor.inputs[0]?.key).toBe('order-001');
     expect(logStep.mock.calls[0]?.[0]).toBe('consume-kafka-message');
     expect(logStep.mock.calls[0]?.[1].step_response.status).toBe('processed');
+
+    await consumer.stop();
+    expect(kafka.consumer.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('generates txid when x-correlator-id is missing', async () => {
+    const kafka = createKafka();
+    const processor = new TestMessageProcessor();
+    const consumer = new KafkaConsumer({
+      kafka: kafka.kafka,
+      groupId: 'group-id',
+      topic: 'example-topic',
+      processor,
+      logger: createLogger(),
+    });
+
+    await consumer.start();
+    await kafka.handleMessage(createPayload({}));
+
+    expect(processor.inputs[0]?.txid).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+  });
+
+  it('uses an empty string for null message keys', async () => {
+    const kafka = createKafka();
+    const processor = new TestMessageProcessor();
+    const consumer = new KafkaConsumer({
+      kafka: kafka.kafka,
+      groupId: 'group-id',
+      topic: 'example-topic',
+      processor,
+      logger: createLogger(),
+    });
+
+    await consumer.start();
+    await kafka.handleMessage(createPayloadWithoutKey());
+
+    expect(processor.inputs[0]?.key).toBe('');
   });
 
   it('logs and rethrows processing errors', async () => {
     const kafka = createKafka();
-    const processor = new TestMessageProcessor(true);
+    const processor = new TestMessageProcessor(new Error('processing failed'));
     const consumer = new KafkaConsumer({
       kafka: kafka.kafka,
       groupId: 'group-id',
@@ -130,5 +187,42 @@ describe('KafkaConsumer', () => {
     await consumer.start();
     await expect(kafka.handleMessage(createPayload())).rejects.toThrow('processing failed');
     expect(logStep.mock.calls[0]?.[2]).toBe('error');
+  });
+
+  it('reads string and array header values', async () => {
+    const kafka = createKafka();
+    const processor = new TestMessageProcessor();
+    const consumer = new KafkaConsumer({
+      kafka: kafka.kafka,
+      groupId: 'group-id',
+      topic: 'example-topic',
+      processor,
+      logger: createLogger(),
+    });
+
+    await consumer.start();
+    await kafka.handleMessage(
+      createPayload({ 'x-correlator-id': ['corr-001', Buffer.from('corr-002')] }),
+    );
+
+    expect(processor.inputs[0]?.txid).toBe('corr-001');
+  });
+
+  it('logs unknown errors with fallback message', async () => {
+    const kafka = createKafka();
+    const processor = new TestMessageProcessor('unknown failure');
+    const consumer = new KafkaConsumer({
+      kafka: kafka.kafka,
+      groupId: 'group-id',
+      topic: 'example-topic',
+      processor,
+      logger: createLogger(),
+    });
+
+    await consumer.start();
+    await expect(kafka.handleMessage(createPayload())).rejects.toBe('unknown failure');
+    expect(logStep.mock.calls[0]?.[1].step_response).toMatchObject({
+      message: 'Unknown error',
+    });
   });
 });

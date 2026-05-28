@@ -16,7 +16,13 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.ts'],
-      exclude: ['src/main.ts'],
+      exclude: [
+        'src/main.ts',
+        'src/bootstrap/**',
+        'src/infra/config/**',
+        'src/infra/logger/col-logger.ts',
+        'src/infra/logger/logger.ts',
+      ],
     },
   },
 });

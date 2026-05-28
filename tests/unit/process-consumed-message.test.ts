@@ -42,4 +42,12 @@ describe('ProcessConsumedMessageUseCase', () => {
 
     expect(response.data).toBe('plain message');
   });
+
+  it('converts blank payload to null', () => {
+    const useCase = new ProcessConsumedMessageUseCase();
+
+    const response = useCase.execute(createInput('   '));
+
+    expect(response.data).toBeNull();
+  });
 });
