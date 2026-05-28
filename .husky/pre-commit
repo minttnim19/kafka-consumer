@@ -1,0 +1,5 @@
+npx --no-install lint-staged
+gitleaks protect --staged
+trivy fs --quiet --severity HIGH,CRITICAL --ignore-unfixed .
+npm audit --audit-level=high
+npm test
