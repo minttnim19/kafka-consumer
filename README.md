@@ -39,6 +39,7 @@ kafka-consumer/
 │   │   │   ├── manual-message-publisher.ts
 │   │   │   └── topic-admin.ts
 │   │   ├── http/
+│   │   │   ├── http-client.ts
 │   │   │   └── manual-api-server.ts
 │   │   ├── logger/
 │   │   │   ├── col-logger.ts
@@ -279,6 +280,89 @@ curl http://localhost:3000/health
 curl http://localhost:3000/healthz
 ```
 
+## HTTP Client
+
+Shared outbound HTTP calls should use `src/infra/http/http-client.ts`. Pass `metadata.txid` on each request to make the HTTP step log traceable with the same transaction id used by the Kafka consumer.
+
+Create an application port:
+
+```ts
+// src/application/ports/payment-gateway.ts
+export type Payment = {
+  paymentId: string;
+  status: string;
+};
+
+export type PaymentGateway = {
+  getPayment: (txid: string, paymentId: string) => Promise<Payment>;
+};
+```
+
+Implement the port with a service-specific infra client:
+
+```ts
+// src/infra/http/clients/payment-client.ts
+import type { Payment, PaymentGateway } from '@/application/ports/payment-gateway';
+import { createHttpClient } from '@/infra/http/http-client';
+
+const paymentApi = createHttpClient({
+  baseURL: 'https://payment.example.com',
+  timeoutMs: 5_000,
+  headers: {
+    'x-client-id': 'kafka-consumer',
+  },
+});
+
+export class PaymentClient implements PaymentGateway {
+  async getPayment(txid: string, paymentId: string): Promise<Payment> {
+    const response = await paymentApi.get<Payment>(`/payments/${paymentId}`, {
+      metadata: { txid },
+    });
+
+    return response.data;
+  }
+}
+```
+
+Inject the port into a consumer processor and pass the consumed message `txid`:
+
+```ts
+import type {
+  ConsumedMessageInput,
+  MessageProcessResult,
+  MessageProcessor,
+} from '@/application/ports/message-processor';
+import type { PaymentGateway } from '@/application/ports/payment-gateway';
+
+export class ProcessConsumedMessageUseCase implements MessageProcessor {
+  constructor(private readonly paymentGateway: PaymentGateway) {}
+
+  async execute(input: ConsumedMessageInput): Promise<MessageProcessResult> {
+    const payment = await this.paymentGateway.getPayment(input.txid, 'payment-001');
+
+    return {
+      txid: input.txid,
+      status: 'processed',
+      processedAt: new Date().toISOString(),
+    };
+  }
+}
+```
+
+For direct one-off calls, use the helper functions:
+
+```ts
+import { httpPost } from '@/infra/http/http-client';
+
+const result = await httpPost(
+  'https://payment.example.com/payments',
+  { orderId: 'order-001' },
+  { metadata: { txid: 'transaction-id' } },
+);
+```
+
+When `metadata.txid` is present, the HTTP client creates a log model with that `txid` and writes a `logStep` on success or Axios error.
+
 ## Testing
 
 Vitest is the preferred test runner for this project because it is lightweight and works well with TypeScript.
@@ -410,6 +494,7 @@ KAFKA_SASL_MECHANISM=plain
 # KAFKA_SASL_USERNAME=username
 # KAFKA_SASL_PASSWORD=password
 MANUAL_API_PORT=3000
+HTTP_TIMEOUT_MS=10000
 LOG_LEVEL=info
 LOG_PATH=./logs
 LOG_TO_FILE=false

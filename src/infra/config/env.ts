@@ -32,6 +32,7 @@ const envSchema = z
     KAFKA_SASL_USERNAME: z.string().min(1).optional(),
     KAFKA_SASL_PASSWORD: z.string().min(1).optional(),
     MANUAL_API_PORT: z.coerce.number().int().positive().default(3000),
+    HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     LOG_PATH: z.string().default('./logs'),
     LOG_TO_FILE: booleanFromEnv.default(false),
