@@ -1,0 +1,81 @@
+version: 0.2
+
+env:
+  git-credential-helper: yes
+  variables:
+    AWS_DEFAULT_REGION: ap-southeast-1
+
+phases:
+  install:
+    commands:
+      - npm ci
+      - echo Installing Twistlock Scanner...
+      - curl -o twistcli -u "$TWISTLOCK_USER:$TWISTLOCK_PASSWORD" $TWISTLOCK_URL/api/v1/util/twistcli
+      - chmod a+x twistcli
+  pre_build:
+    commands:
+      - AWS_ECR_ACCOUNT_URL=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - VERSION=latest-$(date +%s)
+      - REPOSITORY_URI=$AWS_ECR_ACCOUNT_URL/$REPO_NAME
+
+  build:
+    commands:
+      - ASSUME_ROLE_ARN="$CB_ROLE_ARN"
+      - TEMP_ROLE=$(aws sts assume-role --role-arn $ASSUME_ROLE_ARN --role-session-name CodeBuild)
+      - export TEMP_ROLE
+      - export AWS_ACCESS_KEY_ID=$(echo "${TEMP_ROLE}" | jq -r '.Credentials.AccessKeyId')
+      - export AWS_SECRET_ACCESS_KEY=$(echo "${TEMP_ROLE}" | jq -r '.Credentials.SecretAccessKey')
+      - export AWS_SESSION_TOKEN=$(echo "${TEMP_ROLE}" | jq -r '.Credentials.SessionToken')
+
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ECR_ACCOUNT_URL
+
+      - npm run lint
+      - npm run type-check
+      - npm test
+      - docker build -t $REPOSITORY_URI:latest .
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$VERSION
+      - printf '[{"name":"%s","imageUri":"%s"}]' "$REPO_NAME" "$REPOSITORY_URI:$VERSION" > images.json
+      - echo $(cat images.json)
+
+  post_build:
+    commands:
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$VERSION
+      - aws ecr start-image-scan --repository-name $REPO_NAME --image-id imageTag=$VERSION || true
+      - |
+        sleep 120
+        for attempt in $(seq 1 60); do
+          SCAN_STATUS=$(aws ecr describe-image-scan-findings --repository-name $REPO_NAME --image-id imageTag=$VERSION --query 'imageScanStatus.status' --output text 2>/dev/null || echo "ERROR")
+          if [ "$SCAN_STATUS" = "COMPLETE" ]; then
+            break
+          fi
+          if [ "$SCAN_STATUS" = "FAILED" ] || [ "$SCAN_STATUS" = "UNSUPPORTED" ]; then
+            echo "ECR image scan ended with status: $SCAN_STATUS"
+            exit 1
+          fi
+          sleep 3
+        done
+        if [ "$SCAN_STATUS" != "COMPLETE" ]; then
+          echo "Timed out waiting for ECR image scan to complete. Last status: $SCAN_STATUS"
+          exit 1
+        fi
+      - |
+        SCAN_RESULTS=$(aws ecr describe-image-scan-findings --repository-name $REPO_NAME --image-id imageTag=$VERSION)
+        printf '%s' "$SCAN_RESULTS" > imageScanFindings.json
+        HIGH=$(echo "$SCAN_RESULTS" | jq -r '.imageScanFindings.findingSeverityCounts.HIGH // 0')
+        CRITICAL=$(echo "$SCAN_RESULTS" | jq -r '.imageScanFindings.findingSeverityCounts.CRITICAL // 0')
+        if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+          echo "Critical Findings: $CRITICAL"
+          echo "High Findings: $HIGH"
+          echo "Build failed due to CRITICAL/HIGH vulnerabilities in the image."
+          exit 1
+        else
+          $CODEBUILD_SRC_DIR/twistcli images scan --address $TWISTLOCK_URL --user $TWISTLOCK_USER --password $TWISTLOCK_PASSWORD --details $REPOSITORY_URI:$VERSION
+        fi
+
+artifacts:
+  files:
+    - '**/images.json'
+    - '**/imageScanFindings.json'
+  discard-paths: yes

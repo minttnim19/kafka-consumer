@@ -1,0 +1,30 @@
+version: 0.2
+env:
+  shell: bash
+phases:
+  install:
+    runtime-versions:
+      java: corretto17
+      nodejs: 24
+    commands:
+      - set -euo pipefail
+  pre_build:
+    commands:
+      - wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.6.2.2472-linux.zip
+      - unzip sonar-scanner-cli-4.6.2.2472-linux.zip && rm sonar-scanner-cli-4.6.2.2472-linux.zip
+      - export PATH="$PATH:./sonar-scanner-4.6.2.2472-linux/bin/"
+      - npm ci
+
+  build:
+    commands:
+      - npm run lint
+      - npm run test:coverage
+      - |
+        sonar-scanner \
+          -Dsonar.projectKey="$PROJECT" -Dsonar.projectName="$PROJECT" \
+          -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.host.url="$REVIEW_HOST" \
+          -Dsonar.login="$SONAR_TOKEN" \
+          -Dsonar.exclusions=dist/**,node_modules/**,coverage/** \
+          -Dsonar.cpd.exclusions=src/infra/http/docs/examples/**,tests/** \
+          -Dsonar.test.inclusions=tests/**/*.spec.ts,tests/**/*.test.ts \
+          -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
