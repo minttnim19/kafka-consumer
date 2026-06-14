@@ -3,6 +3,7 @@ import type {
   MessageProcessResult,
   MessageProcessor,
 } from '@/application/ports/message-processor';
+import { decodeJsonText } from '@/shared/json';
 
 export type ProcessedMessageResult = MessageProcessResult & {
   status: 'processed';
@@ -16,16 +17,6 @@ export type ProcessedMessageResult = MessageProcessResult & {
   processedAt: string;
 };
 
-const parseMessageValue = (value: string): unknown => {
-  if (value.trim().length === 0) return null;
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-};
-
 export class ProcessConsumedMessageUseCase implements MessageProcessor {
   execute(input: ConsumedMessageInput): ProcessedMessageResult {
     return {
@@ -37,7 +28,7 @@ export class ProcessConsumedMessageUseCase implements MessageProcessor {
         offset: input.offset,
         key: input.key,
       },
-      data: parseMessageValue(input.value),
+      data: decodeJsonText(input.value),
       processedAt: new Date().toISOString(),
     };
   }

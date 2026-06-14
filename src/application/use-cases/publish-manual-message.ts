@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { ManualMessagePublisher } from '@/application/ports/manual-message-publisher';
+import { encodeJsonText } from '@/shared/json';
 
 export type PublishManualMessageInput = {
   topic: string;
@@ -18,15 +19,12 @@ export type PublishManualMessageOutput = {
   publishedAt: string;
 };
 
-const stringifyMessageValue = (value: unknown): string =>
-  typeof value === 'string' ? value : JSON.stringify(value);
-
 export class PublishManualMessageUseCase {
   constructor(private readonly publisher: ManualMessagePublisher) {}
 
   async execute(input: PublishManualMessageInput): Promise<PublishManualMessageOutput> {
     const txid = input.headers?.['x-correlator-id'] ?? randomUUID();
-    const value = stringifyMessageValue(input.value);
+    const value = encodeJsonText(input.value);
     const headers = {
       ...input.headers,
       'x-correlator-id': txid,

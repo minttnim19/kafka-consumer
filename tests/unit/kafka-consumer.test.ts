@@ -10,8 +10,11 @@ import { KafkaConsumer } from '@/infra/kafka/consumer';
 import type { Logger } from '@/infra/logger/logger';
 
 type LogStepPayload = {
+  result_code?: string;
+  result_desc?: string;
   step_response: {
     status: string;
+    message?: string;
   };
 };
 
@@ -187,6 +190,53 @@ describe('KafkaConsumer', () => {
     await consumer.start();
     await expect(kafka.handleMessage(createPayload())).rejects.toThrow('processing failed');
     expect(logStep.mock.calls[0]?.[2]).toBe('error');
+    expect(logStep.mock.calls[0]?.[1]).toMatchObject({
+      result_code: '500',
+      result_desc: 'processing failed',
+    });
+  });
+
+  it('uses error status code when processing errors include one', async () => {
+    const kafka = createKafka();
+    const error = Object.assign(new Error('validation failed'), { statusCode: 422 });
+    const processor = new TestMessageProcessor(error);
+    const consumer = new KafkaConsumer({
+      kafka: kafka.kafka,
+      groupId: 'group-id',
+      topic: 'example-topic',
+      processor,
+      logger: createLogger(),
+    });
+
+    await consumer.start();
+    await expect(kafka.handleMessage(createPayload())).rejects.toThrow('validation failed');
+    expect(logStep.mock.calls[0]?.[1]).toMatchObject({
+      result_code: '422',
+      result_desc: 'validation failed',
+    });
+  });
+
+  it('uses response status code when the top-level error status is blank', async () => {
+    const kafka = createKafka();
+    const error = Object.assign(new Error('upstream conflict'), {
+      status: '   ',
+      response: { status: '409' },
+    });
+    const processor = new TestMessageProcessor(error);
+    const consumer = new KafkaConsumer({
+      kafka: kafka.kafka,
+      groupId: 'group-id',
+      topic: 'example-topic',
+      processor,
+      logger: createLogger(),
+    });
+
+    await consumer.start();
+    await expect(kafka.handleMessage(createPayload())).rejects.toThrow('upstream conflict');
+    expect(logStep.mock.calls[0]?.[1]).toMatchObject({
+      result_code: '409',
+      result_desc: 'upstream conflict',
+    });
   });
 
   it('reads string and array header values', async () => {
@@ -221,8 +271,12 @@ describe('KafkaConsumer', () => {
 
     await consumer.start();
     await expect(kafka.handleMessage(createPayload())).rejects.toBe('unknown failure');
-    expect(logStep.mock.calls[0]?.[1].step_response).toMatchObject({
-      message: 'Unknown error',
+    expect(logStep.mock.calls[0]?.[1]).toMatchObject({
+      result_code: '500',
+      result_desc: 'Unknown error',
+      step_response: {
+        message: 'Unknown error',
+      },
     });
   });
 });

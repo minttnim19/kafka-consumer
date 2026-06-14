@@ -4,6 +4,7 @@ import type { Consumer, EachMessagePayload, Kafka } from 'kafkajs';
 
 import type { ConsumedMessageInput, MessageProcessor } from '@/application/ports/message-processor';
 import { createLogModel, type Logger } from '@/infra/logger/logger';
+import { toRecord, type UnknownRecord } from '@/shared/object';
 
 type KafkaConsumerParams = {
   kafka: Kafka;
@@ -34,6 +35,19 @@ const headerToString = (
 
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : 'Unknown error';
+
+const getStatusCode = (source: UnknownRecord | undefined): string | undefined => {
+  const status = source?.status ?? source?.statusCode;
+  if (typeof status === 'number') return status.toString();
+  if (typeof status === 'string' && status.trim() !== '') return status.trim();
+  return undefined;
+};
+
+const getErrorResultCode = (error: unknown): string => {
+  const errorRecord = toRecord(error);
+  const responseRecord = toRecord(errorRecord?.response);
+  return getStatusCode(errorRecord) ?? getStatusCode(responseRecord) ?? '500';
+};
 
 export class KafkaConsumer {
   private readonly consumer: Consumer;
@@ -104,6 +118,8 @@ export class KafkaConsumer {
           endpoint: `kafka://${topic}`,
           step_request: input,
           step_response: response,
+          result_code: getErrorResultCode(error),
+          result_desc: response.message,
           search_key: key,
         },
         'error',

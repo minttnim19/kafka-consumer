@@ -6,6 +6,8 @@ import pino from 'pino';
 
 import { env } from '@/infra/config/env';
 import { resolveStepName } from '@/infra/logger/step-name-map';
+import { stringifyUnknown } from '@/shared/json';
+import { toRecord, type UnknownRecord } from '@/shared/object';
 
 export enum LogCategory {
   ORDER = 'order',
@@ -23,7 +25,7 @@ type BaseLogFields = {
   result_code: string;
   result_desc: string;
   elapsed_time: number;
-  step_name: string;
+  step_name?: string;
   search_key?: string;
   remark?: string;
 };
@@ -64,6 +66,7 @@ type BaseParams = {
   response?: unknown;
   elapsed_time?: number;
   result_code?: string;
+  result_desc?: string;
   search_key?: string;
   remark?: string;
 };
@@ -105,6 +108,7 @@ type LogStepParams = {
   step_response?: unknown;
   elapsed_time?: number;
   result_code?: string;
+  result_desc?: string;
   activity_name: string;
   error?: unknown;
   search_key?: string;
@@ -170,8 +174,6 @@ type LogPayloadBaseParams = {
   source: BaseParams;
 };
 
-type UnknownRecord = Record<string, unknown>;
-
 const setupLogger = (): pino.Logger => {
   const logDir = path.resolve(env.LOG_PATH);
   let fileTransportEnabled = env.LOG_TO_FILE;
@@ -188,8 +190,10 @@ const setupLogger = (): pino.Logger => {
   const targets: pino.TransportTargetOptions[] = [];
   const hostname = String(process.env.HOSTNAME ?? '').trim();
   const timestamp = (): string => {
-    const now = new Date().toISOString();
-    return `,"time":"${now}","@timestamp":"${now}","timestamp":"${now}"`;
+    const date = new Date();
+    const now = date.toISOString();
+    const epochSeconds = date.getTime() / 1000;
+    return `,"time":${epochSeconds},"@timestamp":"${now}","timestamp":"${now}"`;
   };
 
   if (fileTransportEnabled) {
@@ -223,19 +227,6 @@ const setupLogger = (): pino.Logger => {
 
 export const logger = setupLogger();
 export type Logger = pino.Logger;
-
-const stringifyData = (data: unknown): string => {
-  if (typeof data === 'string') return data;
-  if (data === null || data === undefined) return '';
-  try {
-    return JSON.stringify(data);
-  } catch {
-    return '[Circular or Non-serializable]';
-  }
-};
-
-const toRecord = (value: unknown): UnknownRecord | undefined =>
-  typeof value === 'object' && value !== null ? (value as UnknownRecord) : undefined;
 
 const getString = (source: UnknownRecord | undefined, field: string): string | undefined =>
   typeof source?.[field] === 'string' ? source[field] : undefined;
@@ -325,6 +316,7 @@ const getStepParams = (msg: string, txid: string, params: BaseParams): LogStepPa
   step_request: params.request,
   step_response: params.response,
   result_code: params.result_code,
+  result_desc: params.result_desc,
   activity_name: toKebabCase(msg),
   search_key: params.search_key,
   remark: params.remark,
@@ -333,6 +325,7 @@ const getStepParams = (msg: string, txid: string, params: BaseParams): LogStepPa
 const getErrorStepParams = (msg: string, txid: string, params: LogErrorParams): LogStepParams => ({
   txid,
   error: params.error,
+  result_desc: params.result_desc,
   activity_name: toKebabCase(msg),
   search_key: params.search_key,
   remark: params.remark,
@@ -360,8 +353,8 @@ const getStepData = (params: LogStepParams): ResolvedStepData => ({
 const getErrorLogValues = (params: LogErrorParams): ErrorLogValues => ({
   result_code: coalesceNonEmptyString(params.result_code, '500'),
   endpoint: coalesceNonEmptyString(params.endpoint, ''),
-  request: stringifyData(params.request),
-  response: stringifyData(params.response),
+  request: stringifyUnknown(params.request),
+  response: stringifyUnknown(params.response),
 });
 
 const getErrorLogValuesFromError = (
@@ -372,8 +365,8 @@ const getErrorLogValuesFromError = (
   return {
     result_code: coalesceNonEmptyString(errorInfo.status?.toString(), '500'),
     endpoint: coalesceNonEmptyString(errorInfo.url, fallback.endpoint),
-    request: stringifyData(errorInfo.request),
-    response: stringifyData(errorInfo.response),
+    request: stringifyUnknown(errorInfo.request),
+    response: stringifyUnknown(errorInfo.response),
   };
 };
 
@@ -410,11 +403,11 @@ const buildLogPayloadBase = ({
   end_date: new Date().toISOString(),
   result_indicator,
   result_code,
-  result_desc: resultDesc(result_code),
+  result_desc: coalesceNonEmptyString(source.result_desc, resultDesc(result_code)),
   elapsed_time,
   endpoint: source.endpoint,
-  request: stringifyData(source.request),
-  response: stringifyData(source.response),
+  request: stringifyUnknown(source.request),
+  response: stringifyUnknown(source.response),
   search_key: source.search_key,
   remark: source.remark,
 });
@@ -454,12 +447,15 @@ export const createLogModel = ({
       end_date: new Date().toISOString(),
       result_indicator: result_desc.toUpperCase(),
       result_code: stepData.result_code,
-      result_desc: getResultDescText(stepData.message, result_desc),
+      result_desc: coalesceNonEmptyString(
+        params.result_desc,
+        getResultDescText(stepData.message, result_desc),
+      ),
       elapsed_time: elapsedTime(params.elapsed_time),
       step_name: stepData.step_name,
       endpoint: stepData.endpoint,
-      step_request: stringifyData(stepData.step_request),
-      step_response: stringifyData(stepData.step_response),
+      step_request: stringifyUnknown(stepData.step_request),
+      step_response: stringifyUnknown(stepData.step_response),
       search_key: params.search_key,
       remark: stepData.remark,
     };
@@ -482,7 +478,7 @@ export const createLogModel = ({
         result_code,
         source: params,
       }),
-      step_name: txid,
+      // step_name: txid,
       ref_id: params.ref_id,
     };
 
@@ -505,7 +501,7 @@ export const createLogModel = ({
         result_code,
         source: params,
       }),
-      step_name: txid,
+      // step_name: txid,
       ref_id: params.ref_id,
       msisdn: params.msisdn,
       employee_id: params.employee_id,
@@ -551,7 +547,7 @@ export const createLogModel = ({
           response: errorValues.response,
         },
       }),
-      step_name: txid,
+      // step_name: txid,
       ref_id: params.ref_id,
     };
 
